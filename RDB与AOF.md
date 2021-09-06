@@ -181,6 +181,39 @@ redis服务器的周期性函数servercron默认每隔100毫秒执行一次，�
 ~~~
 
 ~~~wiki
+RDB文件结构：
+REDIS - db_version - databases - EOF - check_sum
+可以看出RDB文件跟class字节码文件一样，开头使用一个魔数来标识这是一个xx文件，RDB文件开头是REDIS，占用五个字节，程序在载入文件时，快速检查载入的文件是否为RDB文件（rdb文件为二进制文件，查看需要使用od -c xxx.rdb来将其转为asii码格式）
+db_version长度为4字节，记录了rdb文件的版本号，比如0006就代表rdb文件的版本为第六版
+databases：
+如果这个服务器的数据库为空，那么这个部分也为空，否则为非空，这个部分保存了数据库保存的所有键值对和类型等信息
+EOF代表rdb正文部分的结束，到了eof，表示最大的一部分区域，也就是所有键值对都已经包括在里面了
+最后一个是check_sum
+校验和是一个无符号整数，是通过上面四个参数来决定的，主要是为了检查rdb文件是否有出错或者损坏的情况出现
+~~~
 
+~~~wiki
+databases是一个比较重要的部分
+它的结构是 selectdb， db_number key_value_pairs
+selectdb毫无疑问，一个rdb文件保存了那么多库，当然得告诉程序后面的命令该在哪个库执行，所以selectdb+db_number构成了选择数据库的逻辑，当读完了db_number后，程序会调用select来执行选库的操作。
+key_value_pairs就是保存了所有的键值对，如果键值对带有过期时间，是会一块被保存的，根据键值对的数量类型和内容以及是否有过期时间等，这部分长度不等
+key_value_pairs部分：
+这部分保存了这个库中所有的键值对。不带过期时间的键值对在rbd文件中以type，key，value三部分组成
+type记录了value的类型，比如string，list，hash_ziplist,set_intset等
+其实这个type就是redisobject中的encoding属性，记录了当前对象的底层数据结构实现是什么
+服务器根据type来判断该以什么样的方式来读入和解释这些value数据
+key总是一个字符串对象，value的话会根据type类型来决定，
+带过期时间的key会额外多出两个表示过期时间的参数，一个是告诉程序接下来需要读取的是一个以毫秒为单位的过期时间的标志性参数
+另一个是真正的过期时间，用毫秒表示，unix时间戳
+~~~
+
+~~~wiki
+以列表对象为例解释一下 key_value_pairs中的value里面是什么样子的：
+对于列表对象，如果type为list，那么表示使用的是linkedlist实现的，如果是list_ziplist，那么底层就是ziplist实现的
+对于list编码（linkedlist实现）的value，它的结构是一个list_length 后面跟item，每一个item表示第一个字符串对象。列表元素就被以一个一个item存储
+总结一下rdb文件格式，每一个rdb文件格式以redis开头，并且后面跟rdb文件版本号，如果数据库为空，那么dataabases部分为空，如果有数据，那么databases部分包含了selectdb db_number 和key_value_pairs
+前两个用来选择正确的库，后面key_value_pairs里面记录的键和值以及过期时间
+它的完整组成是三部分，分别是type，key，value，type毫无疑问，由于redis键的多态实现，每一种对象都对应至少两种以上的底层实现方式，所以type比如说是HASH，那么意思就是哈希对象使用字典或者叫hashtable来实现，而不是ziplist来实现的hash对象。每一种不同的对象在databases的key_value_pairs的value部分的实现都是不一样的，学会分析的文件的方式最重要，具体实现细节没必要记住
+数据量最大的databases部分的格式大致就是这样，databases完了以后有一个EOF，代表rdb文件的正文部分结束，最终来一个校验和，作用是检查文件是否有损坏等情况
 ~~~
 
