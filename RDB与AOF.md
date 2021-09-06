@@ -2,7 +2,84 @@
 
 redis有两种持久化方式：一种是基于快照的，叫RDB，另一种是只追加文件，AOF
 
-RDB：
+RDB源码分析：rdb.c/rdbSave文件
+
+~~~c
+int rdbSave(char *filename, rdbSaveInfo *rsi) {
+    char tmpfile[256];// 临时文件缓冲区
+    char cwd[MAXPATHLEN]; /* Current working dir path for error messages. */
+    FILE *fp = NULL;// 文件句柄
+    rio rdb;// rdb文件
+    int error = 0;
+    // 创建一个临时的rdb文件。以w的方式创建.
+    snprintf(tmpfile,256,"temp-%d.rdb", (int) getpid());
+    fp = fopen(tmpfile,"w");
+    // 如果打开失败，就把错误存储在cwd中
+    if (!fp) {
+        char *cwdp = getcwd(cwd,MAXPATHLEN);
+        serverLog(LL_WARNING,
+            "Failed opening the RDB file %s (in server root dir %s) "
+            "for saving: %s",
+            filename,
+            cwdp ? cwdp : "unknown",
+            strerror(errno));
+        return C_ERR;
+    }
+    // 初始化IO
+    rioInitWithFile(&rdb,fp);
+    // 开始保存 RDBFLAGS_NONE = 0
+    startSaving(RDBFLAGS_NONE);
+    // 自动同步rdb REDIS_AUTOSYNC_BYTES (1024*1024*32)=32MB
+    if (server.rdb_save_incremental_fsync)
+        // 如果打开了增量同步开关，每32M进行一次flush操作，在后面的流程看到这个选项的作用
+        rioSetAutoSync(&rdb,REDIS_AUTOSYNC_BYTES);
+    // 写入文件，如果失败就直接返回错误error
+    if (rdbSaveRio(&rdb,&error,RDBFLAGS_NONE,rsi) == C_ERR) {
+        errno = error;
+        goto werr;
+    }
+
+    /* Make sure data will not remain on the OS's output buffers */
+    // 确保数据不会保留在操作系统的输出缓冲区上
+    if (fflush(fp)) goto werr;
+    if (fsync(fileno(fp))) goto werr;
+    if (fclose(fp)) { fp = NULL; goto werr; }
+    fp = NULL;
+    
+    /* Use RENAME to make sure the DB file is changed atomically only
+     * if the generate DB file is ok. */
+     // 使用RENAME来确保只有在生成的DB文件ok的情况下才会自动更改DB文件
+    if (rename(tmpfile,filename) == -1) {
+        char *cwdp = getcwd(cwd,MAXPATHLEN);
+        serverLog(LL_WARNING,
+            "Error moving temp DB file %s on the final "
+            "destination %s (in server root dir %s): %s",
+            tmpfile,
+            filename,
+            cwdp ? cwdp : "unknown",
+            strerror(errno));
+        unlink(tmpfile);// 删除临时文件
+        stopSaving(0);// 停止保存
+        return C_ERR;// 返回异常信息
+    }
+    // 输出RDB保存成功日志
+    serverLog(LL_NOTICE,"DB saved on disk");
+    // 设置保存状态
+    server.dirty = 0;// 数据库修改次数
+    server.lastsave = time(NULL);// 上一次执行时间
+    server.lastbgsave_status = C_OK;
+    stopSaving(1);
+    return C_OK;
+
+werr:
+    // 输出失败错误日志
+    serverLog(LL_WARNING,"Write error saving DB on disk: %s", strerror(errno));
+    if (fp) fclose(fp);
+    unlink(tmpfile);
+    stopSaving(0);
+    return C_ERR;
+}
+~~~
 
 redis可以通过创建快照的方式来获得存储在内存里面的数据在某个时间节点上的副本，redis创建快照后，可以对快照进行备份，可以将快照复制到其他服务器从而创建此redis服务器的副本，redis主从，还可以将redis留在原地以便重启服务器的时候使用
 
@@ -36,7 +113,7 @@ RDB的优势：
 
 1.rdb是redis数据的非常紧凑的单文件时间节点表示，rdb文件非常适合备份，可以在灾难恢复时恢复不同版本的数据
 
-2.rdb最大程度的提高了redis的性能，因为redis父进程为了持久化需要做的唯一工作时派生一个将完成其余所有工作的子进程，父进程永远不会执行磁盘IO或类似动作
+2.rdb最大程度的提高了redis的性能，因为redis父进程为了持久化需要做的唯一工作时派生一个将完成其余所有工作的子进程，父进程永远不会执行磁盘IO或类似动作，这是bgsave
 
 3.与aof相比，rdb允许更快的启动大数据集
 
@@ -67,3 +144,12 @@ AOF的缺点：
 至于aof的刷盘策略，建议使用每秒一次的fsync。always策略足够安全但是非常慢，有组提交优化，如果有多个并行写入，redis会尝试执行单个fsync操作
 
 aof断裂也是可以恢复数据的，比如正在写aof的过程中服务器宕机了，那么aof文件后面的部分命令可能会被截断，redis的最新版本无论如何都会加载aof，只需丢弃文件中最后一个格式不正确的命令就ok了
+
+
+
+
+
+~~~wiki
+
+~~~
+
