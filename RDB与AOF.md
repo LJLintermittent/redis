@@ -347,9 +347,7 @@ AOF补充：
 
 同样的，对于script load，也没有修改数据库，但是修改了服务器状态，那么也会使用redis_force_aof标志强行写入aof，另外，为了让主从服务器都可以正确的载入script load命令所指定的脚本，服务器还需要使用redis_force_repl标志，强制将script load命令复制给其他所有从服务器
 
+redis_force_repl：强制主服务器将当前执行的命令复制给所有的从服务器（这两个标志都是在redisclient中的flag属性）
 
-
-
-
-
+aofclient是一个不带网络连接的伪客户端，另外需要注意，lua_client也是一个伪客户端，并且luaclient会在服务器初始化的时候就会创建，并且这个伪客户端会一直存在，而aofclient仅在需要载入aof文件的时候进行创建，并且载入完成以后，redis服务器会关闭这个伪客户端
 
